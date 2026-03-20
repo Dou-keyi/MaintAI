@@ -1,132 +1,95 @@
-import React, { useEffect, useState } from 'react';
-import { Upload, X } from 'lucide-react';
-import { useNavigate, useParams } from 'react-router-dom';
-import axios from 'axios';
-import { supabase } from '../lib/supabase';
+import React, { useEffect, useState } from 'react'
+import { Upload, X } from 'lucide-react'
+import { useNavigate, useParams } from 'react-router-dom'
+import { api, type MachineDetail } from '../lib/api'
 
 export default function EditEquipment() {
-  const navigate = useNavigate();
-  const { id } = useParams();
-  const [loading, setLoading] = useState(false);
-  const [pageLoading, setPageLoading] = useState(true);
-  const [existingCategories, setExistingCategories] = useState<string[]>([]);
-  const [categoryMode, setCategoryMode] = useState<'existing' | 'new'>('existing');
-  const [selectedExistingCategory, setSelectedExistingCategory] = useState('');
-  const [name, setName] = useState('');
-  const [category, setCategory] = useState('');
-  const [location, setLocation] = useState('');
-  const [loadLevel, setLoadLevel] = useState('Medium');
-  const [currentTemp, setCurrentTemp] = useState(68);
-  const [currentVibration, setCurrentVibration] = useState(0.4);
-  const [currentRpm, setCurrentRpm] = useState(1200);
-  const [cyclesCompleted, setCyclesCompleted] = useState(0);
-  const [cyclesPerDay, setCyclesPerDay] = useState(24);
-  const [usageHours, setUsageHours] = useState(8);
-  const [maxTemp, setMaxTemp] = useState(85);
-  const [logFile, setLogFile] = useState<File | null>(null);
+  const navigate = useNavigate()
+  const { id } = useParams()
+  const [loading, setLoading] = useState(false)
+  const [pageLoading, setPageLoading] = useState(true)
+  const [machine, setMachine] = useState<MachineDetail | null>(null)
+  const [name, setName] = useState('')
+  const [machineType, setMachineType] = useState('Motor')
+  const [brand, setBrand] = useState('Generic')
+  const [location, setLocation] = useState('')
+  const [notes, setNotes] = useState('')
+  const [temperature, setTemperature] = useState(68)
+  const [vibration, setVibration] = useState(0.4)
+  const [rpm, setRpm] = useState(1200)
+  const [cycleCount, setCycleCount] = useState(0)
+  const [loadPct, setLoadPct] = useState(65)
+  const [logFile, setLogFile] = useState<File | null>(null)
 
   useEffect(() => {
-    const loadData = async () => {
-      if (!id) return;
-
-      const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) {
-        navigate('/login');
-        return;
+    const loadMachine = async () => {
+      if (!id) return
+      try {
+        const { data } = await api.get<MachineDetail>(`/api/machines/${id}`)
+        setMachine(data)
+        setName(data.name || '')
+        setMachineType(data.type || 'Motor')
+        setBrand(data.brand || 'Generic')
+        setLocation(data.location || '')
+        setNotes(data.notes || '')
+        const latest = data.sensor_readings[0]
+        setTemperature(Number(latest?.temperature ?? 68))
+        setVibration(Number(latest?.vibration ?? 0.4))
+        setRpm(Number(latest?.rpm ?? 1200))
+        setCycleCount(Number(latest?.cycle ?? 0))
+        setLoadPct(Number(latest?.load_pct ?? 65))
+      } catch (error) {
+        console.error(error)
+        navigate('/dashboard')
+      } finally {
+        setPageLoading(false)
       }
+    }
 
-      const [{ data: equipment, error }, { data: categoryRows }] = await Promise.all([
-        supabase.from('user_equipments').select('*, equipment_catalog(*)').eq('id', id).eq('user_id', user.id).single(),
-        supabase.from('user_equipments').select('specifications').eq('user_id', user.id)
-      ]);
-
-      if (error || !equipment) {
-        navigate('/dashboard');
-        return;
-      }
-
-      const specs = equipment.specifications || {};
-      const categories = Array.from(
-        new Set(
-          (categoryRows || [])
-            .map((item: any) => item?.specifications?.asset_category)
-            .filter((value: string | undefined) => !!value && value.trim().length > 0)
-        )
-      ) as string[];
-
-      const currentCategory = specs.asset_category || '';
-      setExistingCategories(categories);
-      setCategory(currentCategory);
-      setSelectedExistingCategory(currentCategory || categories[0] || '');
-      setCategoryMode(currentCategory && categories.includes(currentCategory) ? 'existing' : 'new');
-      setName(equipment.custom_name || '');
-      setLocation(equipment.location || '');
-      setLoadLevel(specs.load_intensity || 'Medium');
-      setCurrentTemp(Number(specs.current_temperature ?? 68));
-      setCurrentVibration(Number(specs.current_vibration ?? 0.4));
-      setCurrentRpm(Number(specs.current_rpm ?? 1200));
-      setCyclesCompleted(Number(specs.cycles_completed ?? 0));
-      setCyclesPerDay(Number(specs.cycles_per_day ?? 24));
-      setUsageHours(Number(specs.usage_hours_per_day ?? 8));
-      setMaxTemp(Number(specs.max_temp ?? 85));
-      setPageLoading(false);
-    };
-
-    loadData();
-  }, [id, navigate]);
+    void loadMachine()
+  }, [id, navigate])
 
   const handleSave = async () => {
-    if (!id) return;
-    const finalCategory = categoryMode === 'existing' ? selectedExistingCategory : category.trim();
-    if (!name.trim()) return alert('Please enter an equipment name.');
-    if (!finalCategory) return alert('Please select or enter a category.');
+    if (!id || !name.trim()) return alert('Please enter an equipment name.')
 
-    setLoading(true);
+    setLoading(true)
     try {
-      const { data: row, error: fetchError } = await supabase.from('user_equipments').select('specifications').eq('id', id).single();
-      if (fetchError) throw fetchError;
+      await api.patch(`/api/machines/${id}`, {
+        name: name.trim(),
+        machine_type: machineType,
+        brand: brand.trim() || null,
+        location: location.trim() || null,
+        notes: notes.trim() || null,
+      })
 
-      const nextSpecifications = {
-        ...(row?.specifications || {}),
-        asset_category: finalCategory,
-        load_intensity: loadLevel,
-        current_temperature: currentTemp,
-        current_vibration: currentVibration,
-        current_rpm: currentRpm,
-        cycles_completed: cyclesCompleted,
-        cycles_per_day: cyclesPerDay,
-        usage_hours_per_day: usageHours,
-        max_temp: maxTemp,
-      };
-
-      const { error } = await supabase
-        .from('user_equipments')
-        .update({
-          custom_name: name.trim(),
-          location: location.trim(),
-          specifications: nextSpecifications,
-        })
-        .eq('id', id);
-
-      if (error) throw error;
+      await api.post('/api/predict', {
+        machine_id: Number(id),
+        cycle: cycleCount,
+        temperature,
+        vibration,
+        rpm,
+        load_pct: loadPct,
+      })
 
       if (logFile) {
-        const fd = new FormData();
-        fd.append('file', logFile);
-        await axios.post(`http://localhost:8000/api/machines/${id}/upload`, fd);
+        const fd = new FormData()
+        fd.append('file', logFile)
+        await api.post(`/api/machines/${id}/upload`, fd, {
+          headers: { 'Content-Type': 'multipart/form-data' },
+        })
       }
 
-      navigate('/dashboard');
-    } catch (e) {
-      console.error(e);
-      alert('Update failed.');
+      navigate('/dashboard')
+    } catch (error) {
+      console.error(error)
+      alert('Update failed.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false);
-  };
+  }
 
   if (pageLoading) {
-    return <div className="px-12 py-10 max-w-5xl mx-auto text-gray-400">Loading equipment...</div>;
+    return <div className="px-12 py-10 max-w-5xl mx-auto text-gray-400">Loading equipment...</div>
   }
 
   return (
@@ -134,7 +97,7 @@ export default function EditEquipment() {
       <div className="flex items-start justify-between mb-8">
         <div>
           <h2 className="font-display text-4xl font-extrabold text-white mb-2">Modify Equipment</h2>
-          <p className="text-gray-400 text-[15px]">Update the machine profile, workload, live readings, and upload a new telemetry log.</p>
+          <p className="text-gray-400 text-[15px]">Update the machine profile and optionally upload a new telemetry log.</p>
         </div>
         <button onClick={() => navigate('/dashboard')} className="px-4 py-2 bg-ink-3 border border-border rounded-lg text-sm text-gray-300 hover:bg-white/5">
           Back to Dashboard
@@ -155,61 +118,43 @@ export default function EditEquipment() {
 
         <div className="grid grid-cols-3 gap-4 mb-6 text-xs">
           <div>
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Category Mode</label>
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setCategoryMode('existing')} className={`flex-1 rounded-xl px-3 py-2.5 border text-xs font-semibold ${categoryMode === 'existing' ? 'bg-teal text-ink border-teal' : 'bg-ink border-border text-gray-300'}`}>Existing</button>
-              <button type="button" onClick={() => setCategoryMode('new')} className={`flex-1 rounded-xl px-3 py-2.5 border text-xs font-semibold ${categoryMode === 'new' ? 'bg-teal text-ink border-teal' : 'bg-ink border-border text-gray-300'}`}>New</button>
-            </div>
-          </div>
-          <div className="col-span-2">
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">{categoryMode === 'existing' ? 'Existing Category' : 'New Category'}</label>
-            {categoryMode === 'existing' ? (
-              <select value={selectedExistingCategory} onChange={(e) => setSelectedExistingCategory(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
-                {existingCategories.map((item) => <option key={item} value={item}>{item}</option>)}
-              </select>
-            ) : (
-              <input type="text" value={category} onChange={(e) => setCategory(e.target.value)} placeholder="e.g. Downstairs, Bathroom, Warehouse" className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-            )}
-          </div>
-        </div>
-
-        <div className="grid grid-cols-4 gap-4 mb-6 text-xs">
-          <div>
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Load Level</label>
-            <select value={loadLevel} onChange={(e) => setLoadLevel(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
-              <option>Light</option><option>Medium</option><option>Heavy</option>
+            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Equipment Type</label>
+            <select value={machineType} onChange={(e) => setMachineType(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
+              <option>Motor</option><option>Pump</option><option>HVAC</option><option>Conveyor</option><option>Compressor</option><option>Cooling</option>
             </select>
           </div>
           <div>
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Usage Hours / Day</label>
-            <input type="number" value={usageHours} onChange={(e) => setUsageHours(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Brand</label>
+            <select value={brand} onChange={(e) => setBrand(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
+              <option>Generic</option><option>Siemens</option><option>ABB</option><option>GE</option><option>Schneider</option><option>Other</option>
+            </select>
           </div>
           <div>
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Cycles Completed</label>
-            <input type="number" value={cyclesCompleted} onChange={(e) => setCyclesCompleted(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-          </div>
-          <div>
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Cycles / Day</label>
-            <input type="number" value={cyclesPerDay} onChange={(e) => setCyclesPerDay(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Notes</label>
+            <input type="text" value={notes} onChange={(e) => setNotes(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-4 mb-6 text-xs">
+        <div className="grid grid-cols-5 gap-4 mb-6 text-xs">
+          <div>
+            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Cycle</label>
+            <input type="number" value={cycleCount} onChange={(e) => setCycleCount(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+          </div>
+          <div>
+            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Load %</label>
+            <input type="number" min="0" max="100" value={loadPct} onChange={(e) => setLoadPct(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+          </div>
           <div>
             <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Current Temp</label>
-            <input type="number" step="0.1" value={currentTemp} onChange={(e) => setCurrentTemp(parseFloat(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+            <input type="number" step="0.1" value={temperature} onChange={(e) => setTemperature(parseFloat(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
           </div>
           <div>
             <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Current Vibration</label>
-            <input type="number" step="0.01" value={currentVibration} onChange={(e) => setCurrentVibration(parseFloat(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+            <input type="number" step="0.01" value={vibration} onChange={(e) => setVibration(parseFloat(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
           </div>
           <div>
             <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Current RPM</label>
-            <input type="number" value={currentRpm} onChange={(e) => setCurrentRpm(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-          </div>
-          <div>
-            <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Max Temp</label>
-            <input type="number" value={maxTemp} onChange={(e) => setMaxTemp(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
+            <input type="number" value={rpm} onChange={(e) => setRpm(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
           </div>
         </div>
 
@@ -231,6 +176,12 @@ export default function EditEquipment() {
           </button>
         </div>
       </div>
+
+      {machine && (
+        <div className="mt-6 text-sm text-gray-400">
+          Current backend record: {machine.name} | Status {machine.status} | Health {machine.health}%
+        </div>
+      )}
     </div>
-  );
+  )
 }

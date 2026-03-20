@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { supabase } from '../lib/supabase';
-import { Activity, Mail, Lock, UserPlus, LogIn, AlertCircle } from 'lucide-react';
+import { Mail, Lock, UserPlus, LogIn, AlertCircle } from 'lucide-react';
 import { useNavigate } from 'react-router-dom';
 
 export default function Login() {
@@ -37,8 +37,8 @@ export default function Login() {
     <div className="min-h-[80vh] flex items-center justify-center px-4 py-20">
       <div className="w-full max-w-md animate-fade-up">
         <div className="flex flex-col items-center mb-8">
-          <div className="w-16 h-16 rounded-2xl bg-teal flex items-center justify-center text-ink mb-6 shadow-lg shadow-teal/20">
-            <Activity size={36} />
+          <div className="mb-6 rounded-[28px] border border-white/8 bg-white/5 p-3 shadow-[0_20px_50px_rgba(45,212,191,0.12)]">
+            <img src="/maintai-mark.svg" alt="MaintAi logo" className="h-20 w-20 object-contain" />
           </div>
           <h1 className="font-display text-4xl font-extrabold text-white tracking-tight">MaintAi</h1>
           <p className="text-gray-400 mt-2 font-body italic">Predictive Maintenance. Secured.</p>

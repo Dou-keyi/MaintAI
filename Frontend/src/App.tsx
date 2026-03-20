@@ -1,5 +1,5 @@
 import { BrowserRouter as Router, Routes, Route, Link, useLocation, useNavigate, Navigate } from 'react-router-dom';
-import { Activity, Database, LayoutDashboard, Search, Settings, LogOut, User } from 'lucide-react';
+import { LogOut, User } from 'lucide-react';
 import React, { useState, useEffect } from 'react';
 import { supabase } from './lib/supabase';
 import Dashboard from './pages/Dashboard';
@@ -9,6 +9,7 @@ import About from './pages/About';
 import Login from './pages/Login';
 import AddEquipment from './pages/AddEquipment';
 import EditEquipment from './pages/EditEquipment';
+import { api } from './lib/api';
 
 function Nav({ session }: { session: any }) {
   const location = useLocation();
@@ -16,8 +17,8 @@ function Nav({ session }: { session: any }) {
   const [apiStatus, setApiStatus] = useState<'online' | 'offline'>('offline');
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/machines')
-      .then(res => setApiStatus(res.ok ? 'online' : 'offline'))
+    api.get('/api/machines')
+      .then(() => setApiStatus('online'))
       .catch(() => setApiStatus('offline'));
   }, [location]);
 
@@ -29,9 +30,7 @@ function Nav({ session }: { session: any }) {
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 flex items-center justify-between px-12 h-16 bg-ink/85 backdrop-blur-md border-b border-border">
       <Link to="/" className="flex items-center gap-2.5 font-display text-lg font-bold text-white tracking-tight">
-        <div className="w-8 h-8 rounded-lg bg-teal flex items-center justify-center text-ink">
-          <Activity size={18} />
-        </div>
+        <img src="/maintai-mark.svg" alt="MaintAi logo" className="h-9 w-9 object-contain drop-shadow-[0_8px_18px_rgba(45,212,191,0.18)]" />
         MaintAi
       </Link>
       
@@ -107,20 +106,42 @@ function Footer() {
 
 function App() {
   const [session, setSession] = useState<any>(null);
+  const [authLoading, setAuthLoading] = useState(true);
 
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setSession(session);
+      setAuthLoading(false);
     });
 
     const {
       data: { subscription },
     } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      setAuthLoading(false);
     });
 
     return () => subscription.unsubscribe();
   }, []);
+
+  if (authLoading) {
+    return (
+      <Router>
+        <div className="min-h-screen bg-ink text-gray-300 font-body">
+          <Nav session={session} />
+          <main className="pt-16">
+            <div className="min-h-[70vh] flex items-center justify-center px-6">
+              <div className="flex flex-col items-center gap-4">
+                <div className="w-12 h-12 rounded-2xl border-2 border-teal/20 border-t-teal animate-spin" />
+                <div className="text-sm text-gray-400">Restoring your workspace...</div>
+              </div>
+            </div>
+          </main>
+          <Footer />
+        </div>
+      </Router>
+    );
+  }
 
   return (
     <Router>

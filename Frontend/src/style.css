@@ -102,7 +102,7 @@ body { margin: 0; padding: 0; }
 
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 10px; }
 .form-grid label { display: grid; gap: 6px; font-weight: 700; color: #0f172a; }
-.form-grid input, .form-grid textarea {
+.form-grid input, .form-grid textarea, .form-grid select {
   border: 1px solid #cbd5e1;
   border-radius: 12px;
   padding: 10px 12px;
@@ -113,10 +113,12 @@ body { margin: 0; padding: 0; }
 .form-grid .full { grid-column: 1 / -1; }
 button.primary { background: linear-gradient(135deg, #2563eb, #0ea5e9); color: #fff; border: none; padding: 12px 14px; border-radius: 12px; font-weight: 800; cursor: pointer; }
 button.full { width: 100%; }
+.form-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 
 .alerts, .logs { list-style: none; padding: 0; margin: 0; display: grid; gap: 8px; }
 .alerts li { padding: 12px; border-radius: 12px; font-weight: 700; }
 .alerts li.warn { background: #fffbeb; color: #92400e; }
+.alerts li.crit { background: #fef2f2; color: #991b1b; }
 .alerts li.ok { background: #ecfdf3; color: #166534; }
 .logs li { padding: 10px 12px; border-radius: 12px; background: #f8fafc; border: 1px solid #e2e8f0; }
 .log-title { font-weight: 800; }
@@ -157,8 +159,32 @@ button.full { width: 100%; }
 .drawer-head { display: flex; align-items: center; justify-content: space-between; margin-bottom: 10px; }
 
 .muted { color: #64748b; font-weight: 600; }
+.banner {
+  border-radius: 14px;
+  padding: 12px 14px;
+  margin-bottom: 16px;
+  font-weight: 700;
+}
+.banner.error {
+  background: #fef2f2;
+  border: 1px solid #fecaca;
+  color: #b91c1c;
+}
+.banner.success {
+  background: #ecfdf3;
+  border: 1px solid #bbf7d0;
+  color: #166534;
+}
+.table-empty, .chart-empty {
+  padding: 18px;
+  border: 1px dashed #cbd5e1;
+  border-radius: 12px;
+  color: #64748b;
+  background: #f8fafc;
+}
 
 @media (max-width: 960px) {
   .topbar { grid-template-columns: 1fr; justify-items: stretch; }
   .nav { flex-wrap: wrap; justify-content: flex-start; }
+  .form-footer { flex-direction: column; align-items: stretch; }
 }

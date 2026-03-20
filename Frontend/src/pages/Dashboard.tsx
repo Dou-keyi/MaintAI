@@ -1,845 +1,755 @@
-import React, { useState, useEffect, useRef } from 'react';
-import { RefreshCw, Plus, X, Activity, Upload, MoreVertical, Wrench, ShieldCheck, AlertTriangle, FileText, Trash2, Pencil } from 'lucide-react';
-import { Doughnut } from 'react-chartjs-2';
-import axios from 'axios';
-import { Chart as ChartJS, ArcElement, Tooltip, Legend } from 'chart.js';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip as RechartsTooltip, ResponsiveContainer, ReferenceLine } from 'recharts';
-import { supabase } from '../lib/supabase';
-import { useNavigate } from 'react-router-dom';
+import React, { useEffect, useMemo, useState } from 'react'
+import { RefreshCw, Upload, Wrench, Trash2, Pencil } from 'lucide-react'
+import { useNavigate } from 'react-router-dom'
+import { Bar, BarChart, CartesianGrid, Cell, Line, LineChart, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
+import {
+  api,
+  type AlertItem,
+  type DashboardResponse,
+  type MachineDetail,
+  type MachineEconomics,
+  type MachineSummary,
+  type MaintenanceLog,
+  type SensorReading,
+} from '../lib/api'
 
-ChartJS.register(ArcElement, Tooltip, Legend);
-
-interface Machine {
-  id: string;
-  name: string;
-  type: string;
-  category?: string;
-  brand?: string;
-  location: string;
-  status: string;
-  health: number;
-  last_maint?: string;
-  updated_at?: string;
-  rul_cycles: number;
-  specifications?: any;
+const statusTone: Record<string, string> = {
+  Healthy: 'text-emerald-400 bg-emerald-500/10 border-emerald-500/20',
+  Warning: 'text-amber-300 bg-amber-500/10 border-amber-500/20',
+  Critical: 'text-red-400 bg-red-500/10 border-red-500/20',
 }
 
-const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
+const shellCard = 'rounded-2xl border border-white/8 bg-[#161c2f] shadow-[0_18px_50px_rgba(0,0,0,0.24)]'
+const innerCard = 'rounded-xl border border-white/6 bg-[#0d1322] shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]'
 
-const getLoadMultiplier = (load?: string) => {
-  if (load === 'Heavy') return 1.35;
-  if (load === 'Light') return 0.8;
-  return 1.0;
-};
+const formatDate = (value?: string | null) => {
+  if (!value) return 'Not logged'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleString()
+}
 
-const getDerivedStatus = (health: number) => {
-  if (health <= 30) return 'Critical';
-  if (health <= 70) return 'Warning';
-  return 'Healthy';
-};
+const getRulHours = (machine: Pick<MachineSummary, 'rul_cycles'> | Pick<MachineDetail, 'rul_cycles'>) =>
+  Math.max(0, Math.round(machine.rul_cycles * 1.8))
 
-const getCategoryCardTone = (category?: string) => {
-  const key = (category || '').trim().toLowerCase();
-  const tones: Record<string, { row: string; badge: string }> = {
-    downstairs: { row: 'hover:bg-cyan-500/8', badge: 'text-cyan-300 bg-cyan-500/10 border-cyan-400/20' },
-    upstairs: { row: 'hover:bg-violet-500/8', badge: 'text-violet-300 bg-violet-500/10 border-violet-400/20' },
-    bathroom: { row: 'hover:bg-sky-500/8', badge: 'text-sky-300 bg-sky-500/10 border-sky-400/20' },
-    warehouse: { row: 'hover:bg-amber-500/8', badge: 'text-amber-300 bg-amber-500/10 border-amber-400/20' },
-    kitchen: { row: 'hover:bg-orange-500/8', badge: 'text-orange-300 bg-orange-500/10 border-orange-400/20' },
-    office: { row: 'hover:bg-emerald-500/8', badge: 'text-emerald-300 bg-emerald-500/10 border-emerald-400/20' },
-    'server room': { row: 'hover:bg-fuchsia-500/8', badge: 'text-fuchsia-300 bg-fuchsia-500/10 border-fuchsia-400/20' },
-    outdoor: { row: 'hover:bg-lime-500/8', badge: 'text-lime-300 bg-lime-500/10 border-lime-400/20' },
-  };
-  return tones[key] || { row: 'hover:bg-teal-500/8', badge: 'text-teal-300 bg-teal-500/10 border-teal-400/20' };
-};
+const getBatteryTone = (health: number) => {
+  if (health <= 35) return 'bg-red-500'
+  if (health <= 65) return 'bg-amber-400'
+  return 'bg-emerald-400'
+}
 
-const deriveMachineMetrics = (machine: any) => {
-  const specs = machine.specifications || {};
-  const baseHealth = Number(machine.health_pct ?? specs.initial_battery ?? 100);
-  const baseRul = Number(machine.rul_cycles ?? 100);
-  const usageHours = Number(specs.usage_hours_per_day ?? 8);
-  const cyclesPerDay = Number(specs.cycles_per_day ?? 24);
-  const completedCycles = Number(specs.cycles_completed ?? 0);
-  const maxTemp = Number(specs.max_temp ?? 85);
-  const currentTemp = Number(specs.current_temperature ?? 0);
-  const currentVibration = Number(specs.current_vibration ?? 0);
-  const loadMultiplier = getLoadMultiplier(specs.load_intensity);
+const BatteryStatus = ({ health }: { health: number }) => {
+  const level = Math.max(6, Math.min(100, Math.round(health)))
 
-  const startDateValue = machine.last_maintenance_date || specs.commissioned_on || machine.created_at || machine.updated_at;
-  const startDate = startDateValue ? new Date(startDateValue) : new Date();
-  const now = new Date();
-  const daysInUse = Math.max(0, (now.getTime() - startDate.getTime()) / (1000 * 60 * 60 * 24));
+  return (
+    <div className="flex items-center gap-3">
+      <div className="relative h-5 w-14 rounded-md border border-border bg-ink p-[2px]">
+        <div className={`h-full rounded-sm ${getBatteryTone(health)}`} style={{ width: `${level}%` }} />
+        <div className="absolute -right-[4px] top-[5px] h-2.5 w-1 rounded-r bg-gray-500/70" />
+      </div>
+      <span className="text-sm font-semibold text-white">{level}%</span>
+    </div>
+  )
+}
 
-  const usageWear = daysInUse * (usageHours / 24) * 1.6 * loadMultiplier;
-  const cycleWear = completedCycles * 0.025 * loadMultiplier;
-  const liveCycleWear = daysInUse * cyclesPerDay * 0.02 * loadMultiplier;
-  const thermalWear = currentTemp > maxTemp ? (currentTemp - maxTemp) * 0.6 : 0;
-  const vibrationWear = currentVibration > 0.8 ? (currentVibration - 0.8) * 18 : 0;
-  const totalWear = usageWear + cycleWear + liveCycleWear + thermalWear + vibrationWear;
-
-  const health = clamp(Math.round((baseHealth - totalWear) * 10) / 10, 0, 100);
-  const rulCycles = clamp(Math.round((baseRul - (daysInUse * cyclesPerDay * loadMultiplier)) * 10) / 10, 0, 999999);
-  const status = machine.status === 'Maintenance Pending' ? 'Maintenance Pending' : getDerivedStatus(health);
-
-  return {
-    health,
-    rul_cycles: rulCycles,
-    status,
-    derived_cycles_completed: Math.round(completedCycles + daysInUse * cyclesPerDay),
-    derived_days_in_use: Math.round(daysInUse * 10) / 10,
-  };
-};
+const formatTelemetryTime = (value: string) => {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
+  return date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+}
 
 export default function Dashboard() {
-  const navigate = useNavigate();
-  const [machines, setMachines] = useState<Machine[]>([]);
-  const [loading, setLoading] = useState(true);
-  const fileInputRef = useRef<HTMLInputElement>(null);
-  
-  // Modal State
-  const [isAddModalOpen, setIsAddModalOpen] = useState(false);
-  const [catalog, setCatalog] = useState<any[]>([]);
-  const [selectedCatalogId, setSelectedCatalogId] = useState<string>('');
-  const [newEqName, setNewEqName] = useState('');
-  const [newEqType, setNewEqType] = useState('Motor');
-  const [newEqBrand, setNewEqBrand] = useState('Generic');
-  const [newEqLocation, setNewEqLocation] = useState('');
-  const [newEqBattery, setNewEqBattery] = useState(100);
-  const [newEqTemp, setNewEqTemp] = useState(85);
-  const [newEqCurrentTemp, setNewEqCurrentTemp] = useState(68);
-  const [newEqCurrentVibration, setNewEqCurrentVibration] = useState(0.4);
-  const [newEqCurrentRpm, setNewEqCurrentRpm] = useState(1200);
-  const [newEqUsage, setNewEqUsage] = useState(8); 
-  const [newEqLoad, setNewEqLoad] = useState('Medium');
-  const [newEqStartDate, setNewEqStartDate] = useState('');
-  const [newEqCycleCount, setNewEqCycleCount] = useState(0);
-  const [newEqDailyCycles, setNewEqDailyCycles] = useState(24);
-  const [initialFile, setInitialFile] = useState<File | null>(null);
-  const [showExampleModal, setShowExampleModal] = useState(false);
+  const navigate = useNavigate()
+  const [loading, setLoading] = useState(true)
+  const [dashboard, setDashboard] = useState<DashboardResponse | null>(null)
+  const [selectedMachine, setSelectedMachine] = useState<MachineDetail | null>(null)
+  const [expandedMachineId, setExpandedMachineId] = useState<number | null>(null)
+  const [expandedSection, setExpandedSection] = useState<'overview' | 'maintenance' | 'economics'>('overview')
+  const [uploadingMachineId, setUploadingMachineId] = useState<number | null>(null)
+  const [economicsMachine, setEconomicsMachine] = useState<MachineSummary | null>(null)
+  const [revenuePerMonth, setRevenuePerMonth] = useState('')
+  const [operatingCostPerMonth, setOperatingCostPerMonth] = useState('')
+  const [replacementCost, setReplacementCost] = useState('')
+  const [deleteMachine, setDeleteMachine] = useState<MachineSummary | null>(null)
+  const [maintenanceMachine, setMaintenanceMachine] = useState<MachineSummary | null>(null)
+  const [maintenanceType, setMaintenanceType] = useState('Preventive')
+  const [maintenanceDate, setMaintenanceDate] = useState(new Date().toISOString().slice(0, 10))
+  const [maintenanceNotes, setMaintenanceNotes] = useState('')
+  const [maintenanceCost, setMaintenanceCost] = useState('')
+  const [maintenanceTechnician, setMaintenanceTechnician] = useState('')
+  const [maintenanceParts, setMaintenanceParts] = useState('')
+  const [resetHealthPct, setResetHealthPct] = useState(100)
+  const [resetRulCycles, setResetRulCycles] = useState(200)
+  const [resetCycle, setResetCycle] = useState(0)
+  const [clearSensorHistory, setClearSensorHistory] = useState(true)
+  const [clearAlerts, setClearAlerts] = useState(true)
+  const [error, setError] = useState('')
 
-  // Dropdown / Local State
-  const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
-  const [selectedMachine, setSelectedMachine] = useState<Machine | null>(null);
-  const [chartData, setChartData] = useState<any[]>([]);
-  const [categoryFilter, setCategoryFilter] = useState('All');
-  const [statusFilter, setStatusFilter] = useState('All');
-  const [maintenanceMachine, setMaintenanceMachine] = useState<Machine | null>(null);
-  const [maintenanceType, setMaintenanceType] = useState('Preventive');
-  const [maintenanceDate, setMaintenanceDate] = useState(new Date().toISOString().slice(0, 10));
-  const [maintenanceNotes, setMaintenanceNotes] = useState('');
-  const [maintenanceCost, setMaintenanceCost] = useState('');
-  const [showChartDetail, setShowChartDetail] = useState(false);
-
-  useEffect(() => {
-    const handleClickOutside = () => setActiveMenuId(null);
-    window.addEventListener('click', handleClickOutside);
-    return () => window.removeEventListener('click', handleClickOutside);
-  }, []);
-
-  useEffect(() => {
-    if (isAddModalOpen || showExampleModal) {
-      document.body.style.overflow = 'hidden';
-    } else {
-      document.body.style.overflow = 'unset';
-    }
-  }, [isAddModalOpen, showExampleModal]);
-
-  const fetchCatalog = async () => {
-    const { data } = await supabase.from('equipment_catalog').select('*');
-    if (data) setCatalog(data);
-  };
-
-  const fetchMachines = async () => {
-    setLoading(true);
+  const fetchDashboard = async (preserveSelection = true) => {
+    setLoading(true)
+    setError('')
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) return;
+      const { data } = await api.get<DashboardResponse>('/api/dashboard')
+      setDashboard(data)
+      const nextId =
+        preserveSelection && selectedMachine
+          ? selectedMachine.id
+          : data.machines[0]?.id
 
-      const { data, error } = await supabase.from('user_equipments')
-        .select('*, equipment_catalog(*)')
-        .eq('user_id', user.id);
-        
-      if (error) throw error;
-      
-      if (data && data.length > 0) {
-        setMachines(data.map((d) => {
-          const derived = deriveMachineMetrics(d);
-          return {
-            id: d.id,
-            name: d.custom_name,
-            type: d.equipment_catalog?.equipment_type || d.custom_type || 'Custom',
-            category: d.specifications?.asset_category || 'Uncategorized',
-            brand: d.equipment_catalog?.brand || d.custom_brand || 'Generic',
-            location: d.location || 'Unknown',
-            status: derived.status,
-            health: derived.health,
-            rul_cycles: derived.rul_cycles,
-            last_maint: d.last_maintenance_date ? new Date(d.last_maintenance_date).toLocaleDateString() : 'No Data',
-            updated_at: d.updated_at ? new Date(d.updated_at).toLocaleString([], { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' }) : 'Never',
-            specifications: {
-              ...(d.specifications || {}),
-              derived_cycles_completed: derived.derived_cycles_completed,
-              derived_days_in_use: derived.derived_days_in_use,
-            }
-          };
-        }));
+      if (nextId) {
+        const machineRes = await api.get<MachineDetail>(`/api/machines/${nextId}`)
+        setSelectedMachine(machineRes.data)
+        setExpandedMachineId(nextId)
+        setExpandedSection('overview')
       } else {
-        setMachines([]);
+        setSelectedMachine(null)
+        setExpandedMachineId(null)
       }
-    } catch (e) {
-      console.error(e);
+    } catch (err) {
+      console.error(err)
+      setError('Unable to load dashboard.')
+    } finally {
+      setLoading(false)
     }
-    setLoading(false);
-  };
+  }
 
   useEffect(() => {
-    fetchMachines();
-    fetchCatalog();
-  }, []);
+    void fetchDashboard(false)
+  }, [])
 
-  useEffect(() => {
-    const interval = window.setInterval(() => {
-      fetchMachines();
-    }, 60000);
-    return () => window.clearInterval(interval);
-  }, []);
+  const topMachine = useMemo(() => {
+    if (!dashboard?.machines.length) return null
+    return [...dashboard.machines].sort((a, b) => a.health - b.health)[0]
+  }, [dashboard])
 
-  const handleSyncUpload = async (machineId: string, file: File) => {
-    setLoading(true);
+  const handleSelectMachine = async (
+    machine: MachineSummary,
+    section: 'overview' | 'maintenance' | 'economics' = 'overview',
+  ) => {
+    if (expandedMachineId === machine.id && expandedSection === section) {
+      setExpandedMachineId(null)
+      return
+    }
+
     try {
-      const fd = new FormData();
-      fd.append('file', file);
-      await axios.post(`http://localhost:8000/api/machines/${machineId}/upload`, fd);
-      alert("Asset Synced successfully!");
-      fetchMachines();
-    } catch (e) {
-      alert("Manual sync failed. Please check file format.");
+      const { data } = await api.get<MachineDetail>(`/api/machines/${machine.id}`)
+      setSelectedMachine(data)
+      setExpandedMachineId(machine.id)
+      setExpandedSection(section)
+    } catch (err) {
+      console.error(err)
+      setError('Unable to load machine detail.')
     }
-    setLoading(false);
-  };
+  }
 
-  const openMaintenanceModal = (machine: Machine) => {
-    setMaintenanceMachine(machine);
-    setMaintenanceType('Preventive');
-    setMaintenanceDate(new Date().toISOString().slice(0, 10));
-    setMaintenanceNotes('');
-    setMaintenanceCost('');
-    setActiveMenuId(null);
-  };
+  const handleSyncUpload = async (machineId: number, file: File) => {
+    setUploadingMachineId(machineId)
+    try {
+      const fd = new FormData()
+      fd.append('file', file)
+      await api.post(`/api/machines/${machineId}/upload`, fd, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+      })
+      await fetchDashboard()
+    } catch (err) {
+      console.error(err)
+      alert('Manual sync failed. Please check file format.')
+    } finally {
+      setUploadingMachineId(null)
+    }
+  }
 
   const handleRequestMaintenance = async () => {
-    if (!maintenanceMachine) return;
+    if (!maintenanceMachine) return
     try {
-      const specs = maintenanceMachine.specifications || {};
-      const restoredHealth = Number(specs.initial_battery ?? 100);
-      const loadMultiplier = getLoadMultiplier(specs.load_intensity);
-      const restoredRul = Math.max(0, Math.floor(restoredHealth * 1.5 * loadMultiplier));
-      const maintenancePayload = {
-        equipment_id: maintenanceMachine.id,
-        maintenance_date: new Date(maintenanceDate).toISOString(),
+      await api.post(`/api/machines/${maintenanceMachine.id}/maintenance-logs`, {
+        maintenance_date: maintenanceDate,
         maintenance_type: maintenanceType,
-        cost: maintenanceCost ? Number(maintenanceCost) : null,
+        cost: maintenanceCost ? Number(maintenanceCost) : 0,
+        technician: maintenanceTechnician || null,
+        parts_replaced: maintenanceParts || null,
         notes: maintenanceNotes || null,
-      };
-
-      const maintenanceInsert = await supabase.from('maintenance_logs').insert([maintenancePayload]);
-      if (maintenanceInsert.error) {
-        console.warn('maintenance_logs insert skipped:', maintenanceInsert.error.message);
-      }
-
-      const { error } = await supabase.from('user_equipments').update({ 
-          last_maintenance_date: new Date(maintenanceDate).toISOString(),
-          status: 'Healthy',
-          health_pct: restoredHealth,
-          rul_cycles: restoredRul,
-          specifications: {
-            ...specs,
-            cycles_completed: 0,
-          },
-      }).eq('id', maintenanceMachine.id);
-      if (error) throw error;
-      alert("Equipment maintenance logged and machine status reset.");
-      setMaintenanceMachine(null);
-      fetchMachines();
-    } catch (e) { console.error(e); }
-  };
-
-  const handleDeleteEquipment = async (machine: Machine) => {
-    const confirmed = window.confirm(`Delete equipment "${machine.name}"? This will remove the equipment and its uploaded logs.`);
-    if (!confirmed) return;
-
-    setLoading(true);
-    try {
-      const maintenanceDelete = await supabase.from('maintenance_logs').delete().eq('equipment_id', machine.id);
-      if (maintenanceDelete.error) {
-        console.warn('maintenance_logs delete skipped:', maintenanceDelete.error.message);
-      }
-
-      const logsDelete = await supabase.from('equipment_logs').delete().eq('equipment_id', machine.id);
-      if (logsDelete.error) throw logsDelete.error;
-
-      const { error } = await supabase.from('user_equipments').delete().eq('id', machine.id);
-      if (error) throw error;
-
-      if (selectedMachine?.id === machine.id) {
-        setSelectedMachine(null);
-        setChartData([]);
-      }
-
-      setActiveMenuId(null);
-      await fetchMachines();
-    } catch (e) {
-      console.error(e);
-      alert("Delete failed.");
+        restored_health_pct: resetHealthPct,
+        restored_rul_cycles: resetRulCycles,
+        reset_cycle: resetCycle,
+        clear_sensor_history: clearSensorHistory,
+        clear_alerts: clearAlerts,
+      })
+      setMaintenanceMachine(null)
+      setMaintenanceNotes('')
+      setMaintenanceCost('')
+      setMaintenanceTechnician('')
+      setMaintenanceParts('')
+      await fetchDashboard()
+    } catch (err) {
+      console.error(err)
+      alert('Maintenance logging failed.')
     }
-    setLoading(false);
-  };
+  }
 
-  const handleAddEquipment = async () => {
-    if (!newEqName) return alert("Please enter a name.");
-    if (!newEqLocation) return alert("Please enter a location.");
-    setLoading(true);
-    const loadFactor = newEqLoad === 'Heavy' ? 0.8 : newEqLoad === 'Light' ? 1.2 : 1.0;
-    const effectiveCycles = Math.max(0, newEqCycleCount);
-    const adjustedHealth = Math.max(0, Math.min(100, Math.round(newEqBattery - (effectiveCycles / 50))));
-
+  const handleDeleteEquipment = async () => {
+    if (!deleteMachine) return
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      const user = session?.user;
-      if (!user) throw new Error("Not authenticated");
+      await api.delete(`/api/machines/${deleteMachine.id}`)
+      if (selectedMachine?.id === deleteMachine.id) {
+        setSelectedMachine(null)
+        setExpandedMachineId(null)
+      }
+      setDeleteMachine(null)
+      await fetchDashboard(false)
+    } catch (err) {
+      console.error(err)
+      alert('Delete failed.')
+    }
+  }
 
-      const { data, error } = await supabase.from('user_equipments').insert([{
-        user_id: user.id,
-        custom_name: newEqName,
-        custom_type: selectedCatalogId ? null : newEqType,
-        custom_brand: selectedCatalogId ? null : newEqBrand,
-        catalog_id: selectedCatalogId || null,
-        location: newEqLocation,
-        health_pct: adjustedHealth,
-        status: adjustedHealth > 70 ? 'Healthy' : adjustedHealth > 30 ? 'Warning' : 'Critical',
-        rul_cycles: Math.max(0, Math.floor((newEqBattery * 1.5 * loadFactor) - (effectiveCycles * 0.15))),
-        last_maintenance_date: newEqStartDate || null,
-        specifications: { 
-          commissioned_on: newEqStartDate || null,
-          cycles_completed: effectiveCycles,
-          cycles_per_day: newEqDailyCycles,
-          max_temp: newEqTemp, 
-          current_temperature: newEqCurrentTemp,
-          current_vibration: newEqCurrentVibration,
-          current_rpm: newEqCurrentRpm,
-          initial_battery: newEqBattery,
-          usage_hours_per_day: newEqUsage,
-          load_intensity: newEqLoad
+  const handleSaveEconomics = async () => {
+    if (!economicsMachine) return
+    try {
+      await api.put(`/api/machines/${economicsMachine.id}/economics`, {
+        revenue_per_month: Number(revenuePerMonth || 0),
+        operating_cost_per_month: Number(operatingCostPerMonth || 0),
+        replacement_cost: Number(replacementCost || 0),
+      })
+      setEconomicsMachine(null)
+      await fetchDashboard()
+    } catch (err) {
+      console.error(err)
+      alert('Economics update failed.')
+    }
+  }
+
+  const openEconomicsModal = (machine: MachineSummary) => {
+    setEconomicsMachine(machine)
+    setRevenuePerMonth(String(machine.revenue_per_month ?? machine.economics?.revenue_per_month ?? 0))
+    setOperatingCostPerMonth(String(machine.operating_cost_per_month ?? machine.economics?.operating_cost_per_month ?? 0))
+    setReplacementCost(String(machine.replacement_cost ?? machine.economics?.replacement_cost ?? 0))
+  }
+
+  const renderEconomics = (economics?: MachineEconomics | null) => {
+    if (!economics) {
+      return <div className="text-sm text-gray-500">No economics data recorded yet.</div>
+    }
+
+    const comparisonData = [
+      {
+        name: 'Keep',
+        value: Number(economics.keep_estimated_value_12m.toFixed(2)),
+        fill: '#2dd4bf',
+      },
+      {
+        name: 'Replace',
+        value: Number(economics.replace_estimated_value_12m.toFixed(2)),
+        fill: '#818cf8',
+      },
+    ]
+
+    const costBreakdownData = [
+      {
+        name: 'Monthly Margin',
+        value: Number(economics.monthly_margin.toFixed(2)),
+        fill: '#34d399',
+      },
+      {
+        name: 'Downtime Risk',
+        value: Number(economics.downtime_risk_cost.toFixed(2)),
+        fill: '#f59e0b',
+      },
+      {
+        name: 'Maint. 12M',
+        value: Number(economics.projected_maintenance_cost.toFixed(2)),
+        fill: '#f87171',
+      },
+    ]
+
+    return (
+      <div className={`${innerCard} px-4 py-4`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-sm font-semibold text-white">{economics.recommendation}</div>
+            <div className="mt-1 text-xs text-gray-400">{economics.rationale}</div>
+          </div>
+          <div className="rounded-full border border-teal/20 bg-teal/10 px-3 py-1 text-[11px] font-mono text-teal">
+            Margin RM {economics.monthly_margin.toFixed(2)}
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3">
+          <div className={`${innerCard} p-3`}>
+            <div className="mb-2 text-[10px] uppercase font-mono tracking-widest text-gray-500">12M Decision Value</div>
+            <div className="h-52">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={comparisonData} margin={{ top: 8, right: 8, left: 0, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.35} />
+                  <XAxis dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                  <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                  <Tooltip
+                    formatter={(value: number) => [`RM ${value.toFixed(2)}`, 'Value']}
+                    contentStyle={{
+                      backgroundColor: '#111827',
+                      border: '1px solid #334155',
+                      borderRadius: '12px',
+                      color: '#e5e7eb',
+                    }}
+                  />
+                  <Bar dataKey="value" radius={[10, 10, 0, 0]}>
+                    {comparisonData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+          <div className={`${innerCard} p-3`}>
+            <div className="mb-2 text-[10px] uppercase font-mono tracking-widest text-gray-500">Cost Pressure</div>
+            <div className="h-52">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={costBreakdownData} layout="vertical" margin={{ top: 8, right: 12, left: 20, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.25} />
+                  <XAxis type="number" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+                  <YAxis type="category" dataKey="name" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} width={86} />
+                  <Tooltip
+                    formatter={(value: number) => [`RM ${value.toFixed(2)}`, 'Amount']}
+                    contentStyle={{
+                      backgroundColor: '#111827',
+                      border: '1px solid #334155',
+                      borderRadius: '12px',
+                      color: '#e5e7eb',
+                    }}
+                  />
+                  <Bar dataKey="value" radius={[0, 10, 10, 0]}>
+                    {costBreakdownData.map((entry) => (
+                      <Cell key={entry.name} fill={entry.fill} />
+                    ))}
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          </div>
+        </div>
+        <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Keep 12M</div>
+            <div className="text-white font-semibold">RM {economics.keep_estimated_value_12m.toFixed(2)}</div>
+          </div>
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Replace 12M</div>
+            <div className="text-white font-semibold">RM {economics.replace_estimated_value_12m.toFixed(2)}</div>
+          </div>
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Downtime Risk</div>
+            <div className="text-white font-semibold">RM {economics.downtime_risk_cost.toFixed(2)}</div>
+          </div>
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Maintenance 12M</div>
+            <div className="text-white font-semibold">RM {economics.projected_maintenance_cost.toFixed(2)}</div>
+          </div>
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Maint. Total</div>
+            <div className="text-white font-semibold">RM {economics.maintenance_cost_total.toFixed(2)}</div>
+          </div>
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Maint. Events</div>
+            <div className="text-white font-semibold">{economics.maintenance_events}</div>
+          </div>
+          <div className={`${innerCard} px-3 py-3`}>
+            <div className="text-[10px] uppercase font-mono tracking-widest text-gray-500 mb-1">Replacement Cost</div>
+            <div className="text-white font-semibold">RM {economics.replacement_cost.toFixed(2)}</div>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  const renderMachineCard = (machine: MachineSummary) => {
+    const isExpanded = expandedMachineId === machine.id && selectedMachine?.id === machine.id
+
+    return (
+    <div
+      key={machine.id}
+      className={`${shellCard} p-5 transition-all hover:border-teal/30 cursor-pointer ${isExpanded ? 'ring-1 ring-teal/40' : ''}`}
+      onClick={() => void handleSelectMachine(machine, 'overview')}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(event) => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault()
+          void handleSelectMachine(machine, 'overview')
         }
-      }]).select('*, equipment_catalog(*)');
+      }}
+    >
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <div className="text-base text-white font-display font-semibold">{machine.name}</div>
+          <div className="text-xs text-gray-400 mt-1">{machine.type} | {machine.location || 'Unknown'}</div>
+        </div>
+        <span className={`px-3 py-1 rounded-full border text-xs font-mono ${statusTone[machine.status] || statusTone.Healthy}`}>{machine.status}</span>
+      </div>
 
-      if (error) throw error;
-      const d = data[0];
+      <div className="grid grid-cols-3 gap-2 mt-4">
+        <div className={`${innerCard} px-4 py-3`}>
+          <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-2">Battery</div>
+          <BatteryStatus health={machine.health} />
+        </div>
+        <div className={`${innerCard} px-4 py-3`}>
+          <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">RUL</div>
+          <div className="text-2xl font-display text-white">{getRulHours(machine)}h</div>
+        </div>
+        <div className={`${innerCard} px-4 py-3`}>
+          <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Last Maint</div>
+          <div className="text-xs text-white">{machine.last_maint ? formatDate(machine.last_maint) : 'None'}</div>
+        </div>
+      </div>
 
-      if (initialFile && d.id) {
-        const fd = new FormData();
-        fd.append('file', initialFile);
-        await axios.post(`http://localhost:8000/api/machines/${d.id}/upload`, fd);
-      }
-      await fetchMachines();
-    } catch (e) {
-      alert("Registration failed.");
+      <div className="flex flex-wrap gap-2 mt-4">
+        <div className="px-3 py-2 bg-white text-ink rounded-lg text-xs font-semibold">
+          {isExpanded ? 'Opened' : 'Click card to view'}
+        </div>
+        <label
+          className="px-3 py-2 bg-ink border border-border rounded-lg text-xs text-gray-300 cursor-pointer flex items-center gap-2"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <Upload size={14} />
+          {uploadingMachineId === machine.id ? 'Updating...' : 'Update CSV'}
+          <input
+            type="file"
+            accept=".csv"
+            className="hidden"
+            onChange={(event) => {
+              event.stopPropagation()
+              const file = event.target.files?.[0]
+              if (file) void handleSyncUpload(machine.id, file)
+              event.currentTarget.value = ''
+            }}
+          />
+        </label>
+        <button
+          onClick={(event) => {
+            event.stopPropagation()
+            setMaintenanceMachine(machine)
+            setMaintenanceType('Preventive')
+            setMaintenanceDate(new Date().toISOString().slice(0, 10))
+            setMaintenanceNotes('')
+            setMaintenanceCost('')
+            setMaintenanceTechnician('')
+            setMaintenanceParts('')
+            setResetHealthPct(100)
+            setResetRulCycles(Math.max(200, Math.round(machine.rul_cycles)))
+            setResetCycle(0)
+            setClearSensorHistory(true)
+            setClearAlerts(true)
+          }}
+          className="px-3 py-2 bg-ink border border-border rounded-lg text-xs text-gray-300 flex items-center gap-2"
+        >
+          <Wrench size={14} /> Maintain
+        </button>
+        <button
+          onClick={(event) => {
+            event.stopPropagation()
+            navigate(`/equipment/${machine.id}/edit`)
+          }}
+          className="px-3 py-2 bg-ink border border-border rounded-lg text-xs text-gray-300 flex items-center gap-2"
+        >
+          <Pencil size={14} /> Edit
+        </button>
+        <div className="ml-auto" />
+        <button
+          onClick={(event) => {
+            event.stopPropagation()
+            setDeleteMachine(machine)
+          }}
+          className="px-3 py-2 bg-red-500/10 border border-red-500/20 rounded-lg text-xs text-red-300 flex items-center gap-2"
+        >
+          <Trash2 size={14} /> Delete
+        </button>
+      </div>
+
+      {isExpanded && selectedMachine && (
+        <div className="mt-4 border-t border-border pt-4">
+          <div className={`${innerCard} mb-4 flex flex-wrap gap-2 p-2`} onClick={(event) => event.stopPropagation()}>
+            {[
+              { id: 'overview', label: 'Overview' },
+              { id: 'maintenance', label: 'Maintenance' },
+              { id: 'economics', label: 'Analytics' },
+            ].map((tab) => (
+              <button
+                key={tab.id}
+                onClick={() => setExpandedSection(tab.id as 'overview' | 'maintenance' | 'economics')}
+                className={`rounded-lg px-3 py-2 text-xs font-medium transition-colors ${
+                  expandedSection === tab.id
+                    ? 'bg-white text-ink'
+                    : 'bg-transparent text-gray-300 hover:bg-white/5 hover:text-white'
+                }`}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          {expandedSection === 'overview' && (
+            <>
+          <div className="grid grid-cols-3 gap-3">
+            <div className={`${innerCard} px-4 py-3`}>
+              <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Brand</div>
+              <div className="text-sm text-white">{selectedMachine.brand || 'Unknown'}</div>
+            </div>
+            <div className={`${innerCard} px-4 py-3`}>
+              <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Installed</div>
+              <div className="text-sm text-white">{selectedMachine.install_date ? formatDate(selectedMachine.install_date) : 'Not logged'}</div>
+            </div>
+            <div className={`${innerCard} px-4 py-3`}>
+              <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Prediction Mode</div>
+              <div className="text-sm text-white">{selectedMachine.latest_prediction?.model_mode || 'No prediction yet'}</div>
+            </div>
+          </div>
+          <div className="mt-4">
+            <div className="text-xs text-gray-500 mb-3 uppercase font-mono tracking-widest">Sensor Trends</div>
+            {renderTelemetry(selectedMachine.sensor_readings)}
+          </div>
+            </>
+          )}
+          {expandedSection === 'maintenance' && (
+            <div className="mt-1">
+              <div className="text-xs text-gray-500 mb-3 uppercase font-mono tracking-widest">Previous Maintenance</div>
+              {renderMachineMaintenanceHistory(selectedMachine.maintenance_logs)}
+            </div>
+          )}
+          {expandedSection === 'economics' && (
+            <div className="mt-1">
+              <div className="mb-3 flex items-center justify-between gap-3">
+                <div className="text-xs text-gray-500 uppercase font-mono tracking-widest">Business Analytics</div>
+                <button
+                  onClick={(event) => {
+                    event.stopPropagation()
+                    openEconomicsModal(machine)
+                  }}
+                  className="px-3 py-2 bg-ink border border-border rounded-lg text-xs text-gray-300"
+                >
+                  Edit Economics
+                </button>
+              </div>
+              {renderEconomics(selectedMachine.economics)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+    )
+  }
+
+  const renderAlerts = (alerts: AlertItem[]) => {
+    if (!alerts.length) {
+      return <div className="text-sm text-gray-500">No active alerts.</div>
     }
-    
-    setIsAddModalOpen(false);
-    setNewEqName('');
-    setNewEqLocation('');
-    setNewEqType('Motor');
-    setNewEqBrand('Generic');
-    setNewEqBattery(100);
-    setNewEqTemp(85);
-    setNewEqCurrentTemp(68);
-    setNewEqCurrentVibration(0.4);
-    setNewEqCurrentRpm(1200);
-    setNewEqUsage(8);
-    setNewEqLoad('Medium');
-    setNewEqStartDate('');
-    setNewEqCycleCount(0);
-    setNewEqDailyCycles(24);
-    setInitialFile(null);
-    setLoading(false);
-  };
+    return (
+      <div className="space-y-3">
+        {alerts.slice(0, 6).map((alert, index) => (
+          <div key={`${alert.id ?? alert.title}-${index}`} className={`${innerCard} px-4 py-3`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="text-white font-medium">{alert.title}</div>
+              <span className={`text-xs font-mono ${alert.severity === 'critical' ? 'text-red-400' : 'text-amber-300'}`}>{alert.severity.toUpperCase()}</span>
+            </div>
+            <div className="text-sm text-gray-400 mt-1">{alert.message}</div>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
-  const handleRowClick = async (machine: Machine) => {
-    setSelectedMachine(machine);
-    try {
-      const { data, error } = await supabase.from('equipment_logs')
-        .select('log_timestamp, temperature, vibration').eq('equipment_id', machine.id)
-        .order('log_timestamp', { ascending: true }).limit(100);
-      if (error) throw error;
-      if (data && data.length > 5) {
-        setChartData(data.map(d => ({
-          time: new Date(d.log_timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-          Temperature: d.temperature,
-          Vibration: d.vibration
-        })));
-        return;
-      }
-    } catch (e) { console.warn("Using fallback chart data."); }
-    
-    const mockData = [];
-    let temp = machine.health > 50 ? 60 : 85;
-    for (let i = 24; i >= 0; i--) {
-      const d = new Date(); d.setHours(d.getHours() - i);
-      mockData.push({
-        time: d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }),
-        Temperature: temp + (Math.random() * 5 - 2.5),
-        Vibration: Math.max(0, 2 + (Math.random() * 1.5 - 0.75))
-      });
-      if (i < 10) temp += 1.5;
+  const renderLogs = (logs: MaintenanceLog[]) => {
+    if (!logs.length) {
+      return <div className="text-sm text-gray-500">No maintenance logs yet.</div>
     }
-    setChartData(mockData);
-  };
+    return (
+      <div className="space-y-3">
+        {logs.slice(0, 6).map((log, index) => (
+          <div key={`${log.id ?? log.machine_id}-${index}`} className={`${innerCard} px-4 py-3`}>
+            <div className="text-white font-medium">{log.machine_name || `Machine #${log.machine_id}`}</div>
+            <div className="text-sm text-gray-400 mt-1">{log.maintenance_type} | RM {Number(log.cost || 0).toFixed(2)}</div>
+            <div className="text-xs text-gray-500 mt-1">{formatDate(log.maintenance_date)}</div>
+          </div>
+        ))}
+      </div>
+    )
+  }
 
-  const donutData = {
-    labels: ['Healthy', 'Impaired', 'Critical'],
-    datasets: [{
-      data: [
-        machines.filter(m => m.health > 70).length,
-        machines.filter(m => m.health <= 70 && m.health > 30).length,
-        machines.filter(m => m.health <= 30).length,
-      ],
-      backgroundColor: ['#10B981', '#F59E0B', '#EF4444'],
-      borderWidth: 0,
-      cutout: '80%'
-    }]
-  };
+  const renderTelemetry = (readings: SensorReading[]) => {
+    if (!readings.length) {
+      return <div className="text-sm text-gray-500">No sensor history uploaded yet.</div>
+    }
 
-  const equipmentCategories = ['All', ...Array.from(new Set(machines.map((m) => m.category).filter(Boolean)))];
-  const statusCategories = ['All', 'Healthy', 'Warning', 'Critical', 'Maintenance Pending'];
-  const statusPriority: Record<string, number> = {
-    'Critical': 0,
-    'Maintenance Pending': 1,
-    'Warning': 2,
-    'Healthy': 3,
-  };
-  const visibleMachines = machines
-    .filter((m) => {
-      const categoryMatch = categoryFilter === 'All' || m.category === categoryFilter;
-      const statusMatch = statusFilter === 'All' || m.status === statusFilter;
-      return categoryMatch && statusMatch;
-    })
-    .sort((a, b) => {
-      const statusDiff = (statusPriority[a.status] ?? 99) - (statusPriority[b.status] ?? 99);
-      if (statusDiff !== 0) return statusDiff;
-      return a.health - b.health;
-    });
+    const chartData = [...readings]
+      .slice(0, 20)
+      .reverse()
+      .map((reading) => ({
+        time: formatTelemetryTime(reading.timestamp),
+        temperature: reading.temperature ?? null,
+        vibration: reading.vibration ?? null,
+        rpm: reading.rpm ?? null,
+      }))
+
+    return (
+      <div className={`${innerCard} p-3`}>
+        <div className="flex flex-wrap gap-2 mb-3 text-[11px] font-mono uppercase tracking-widest">
+          <span className="rounded-full bg-red-500/10 px-2 py-1 text-red-300">Temperature</span>
+          <span className="rounded-full bg-teal-500/10 px-2 py-1 text-teal-300">Vibration</span>
+          <span className="rounded-full bg-indigo-500/10 px-2 py-1 text-indigo-300">RPM</span>
+        </div>
+        <div className="h-64">
+          <ResponsiveContainer width="100%" height="100%">
+            <LineChart data={chartData} margin={{ top: 8, right: 12, left: 0, bottom: 0 }}>
+              <CartesianGrid strokeDasharray="3 3" stroke="#334155" opacity={0.35} />
+              <XAxis dataKey="time" stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+              <YAxis stroke="#94a3b8" fontSize={11} tickLine={false} axisLine={false} />
+              <Tooltip
+                contentStyle={{
+                  backgroundColor: '#111827',
+                  border: '1px solid #334155',
+                  borderRadius: '12px',
+                  color: '#e5e7eb',
+                }}
+              />
+              <Line type="monotone" dataKey="temperature" stroke="#f87171" strokeWidth={2.5} dot={false} connectNulls />
+              <Line type="monotone" dataKey="vibration" stroke="#2dd4bf" strokeWidth={2.5} dot={false} connectNulls />
+              <Line type="monotone" dataKey="rpm" stroke="#818cf8" strokeWidth={2.5} dot={false} connectNulls />
+            </LineChart>
+          </ResponsiveContainer>
+        </div>
+      </div>
+    )
+  }
+
+  const renderMachineMaintenanceHistory = (logs: MaintenanceLog[]) => {
+    if (!logs.length) {
+      return <div className="text-sm text-gray-500">No previous maintenance recorded for this machine.</div>
+    }
+
+    return (
+      <div className="space-y-3">
+        {logs.slice(0, 6).map((log, index) => (
+          <div key={`${log.id ?? log.machine_id}-${index}`} className={`${innerCard} px-4 py-3`}>
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="text-sm font-semibold text-white">{log.maintenance_type}</div>
+                <div className="mt-1 text-xs text-gray-400">{formatDate(log.maintenance_date)}</div>
+              </div>
+              <div className="text-xs font-mono text-teal">RM {Number(log.cost || 0).toFixed(2)}</div>
+            </div>
+            <div className="mt-2 grid grid-cols-2 gap-2 text-xs text-gray-300">
+              <div>Technician: {log.technician || 'Unassigned'}</div>
+              <div>Parts: {log.parts_replaced || 'Not listed'}</div>
+            </div>
+            {(log.restored_health_pct != null || log.restored_rul_cycles != null) && (
+              <div className="mt-2 text-xs text-gray-400">
+                Reset to {log.restored_health_pct ?? '--'}% health and {Math.round((log.restored_rul_cycles ?? 0) * 1.8)}h RUL
+              </div>
+            )}
+            {log.notes && <div className="mt-2 text-xs text-gray-500">{log.notes}</div>}
+          </div>
+        ))}
+      </div>
+    )
+  }
 
   return (
     <>
-      <div className="px-12 py-10 max-w-7xl mx-auto animate-fade-up">
-        {/* Header */}
-        <div className="flex justify-between items-end mb-8">
+      <div className="px-10 py-8 max-w-6xl mx-auto animate-fade-up">
+        <div className="flex justify-between items-end mb-6">
           <div>
-            <h2 className="font-display text-4xl font-extrabold text-white mb-2">Fleet Dashboard</h2>
-            <p className="text-gray-400 font-body text-[15px]">Multi-cloud asset monitoring and RUL forecasting</p>
+            <h2 className="font-display text-3xl font-extrabold text-white mb-2">Fleet Dashboard</h2>
+            <p className="text-gray-400 font-body text-sm">SQLite-backed equipment, alerts, maintenance history, and predictions</p>
           </div>
-          <button onClick={fetchMachines} className="flex items-center gap-2 px-4 py-2 bg-ink-3 border border-border text-sm font-medium rounded-lg transition-all hover:bg-surface-3/10 cursor-pointer">
-            <RefreshCw size={16} className={loading ? "animate-spin" : ""} /> Refresh Status
+          <button onClick={() => void fetchDashboard()} className="flex items-center gap-2 px-4 py-2 bg-ink-3 border border-border text-sm font-medium rounded-lg transition-all hover:bg-surface-3/10 cursor-pointer">
+            <RefreshCw size={16} className={loading ? 'animate-spin' : ''} /> Refresh Status
           </button>
         </div>
 
-        {/* KPIs */}
-        <div className="grid grid-cols-4 gap-4 mb-8">
-          <div className="card">
-             <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Managed Units</div>
-             <div className="text-4xl font-display font-medium text-white">{machines.length}</div>
+        {error && <div className="mb-6 rounded-xl border border-red-500/20 bg-red-500/10 px-4 py-3 text-sm text-red-300">{error}</div>}
+
+        <div className="grid grid-cols-4 gap-3 mb-6">
+          <div className={`${shellCard} p-5`}>
+            <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Managed Units</div>
+            <div className="text-3xl font-display font-medium text-white">{dashboard?.summary.total ?? 0}</div>
           </div>
-          <div className="card border-l-4 border-l-emerald-500">
-             <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Optimal Health</div>
-             <div className="text-4xl font-display font-medium text-emerald-400">{machines.filter(m => m.health > 70).length}</div>
+          <div className={`${shellCard} border-l-4 border-l-emerald-500 p-5`}>
+            <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Optimal Health</div>
+            <div className="text-3xl font-display font-medium text-emerald-400">{dashboard?.summary.healthy ?? 0}</div>
           </div>
-          <div className="card border-l-4 border-l-amber-500">
-             <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Warning Zone</div>
-             <div className="text-4xl font-display font-medium text-amber-400">{machines.filter(m => m.health <= 70 && m.health > 30).length}</div>
+          <div className={`${shellCard} border-l-4 border-l-amber-500 p-5`}>
+            <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Warning Zone</div>
+            <div className="text-3xl font-display font-medium text-amber-400">{dashboard?.summary.warning ?? 0}</div>
           </div>
-          <div className="card border-l-4 border-l-red-500">
-             <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Critical Risk</div>
-             <div className="text-4xl font-display font-medium text-red-500">{machines.filter(m => m.health <= 30).length}</div>
+          <div className={`${shellCard} border-l-4 border-l-red-500 p-5`}>
+            <div className="text-[10px] font-mono text-gray-500 uppercase tracking-widest mb-3">Critical Risk</div>
+            <div className="text-3xl font-display font-medium text-red-500">{dashboard?.summary.critical ?? 0}</div>
           </div>
         </div>
 
-        {/* Main Content */}
-        <div className="flex gap-6">
-          <div className="flex-1 card p-0 flex flex-col min-h-[550px]">
-            <div className="p-5 border-b border-border flex justify-between items-center">
-              <span className="font-display font-semibold text-lg text-white">Asset Directory</span>
-              <button 
-                onClick={() => navigate('/add-equipment')}
-                className="px-4 py-1.5 bg-teal text-ink text-xs font-bold rounded shadow-lg hover:brightness-110 flex items-center gap-1.5 cursor-pointer"
-              >
-                <Plus size={16}/> DEPLOY INSTRUMENT
-              </button>
+        <div className="grid grid-cols-[1.45fr,0.95fr] gap-5">
+          <div className="space-y-5">
+            <div className={`${shellCard} p-5`}>
+              <div className="flex items-center justify-between mb-5">
+                <div>
+                  <h3 className="font-display text-xl text-white">Machines</h3>
+                  <p className="text-xs text-gray-500 mt-1">Live records from `/api/machines` and `/api/dashboard`.</p>
+                </div>
+                <button onClick={() => navigate('/add-equipment')} className="px-4 py-2 bg-teal text-ink rounded-lg text-sm font-bold">
+                  Add Equipment
+                </button>
+              </div>
+              <div className="grid grid-cols-1 gap-3">
+                {loading && !dashboard ? <div className="text-gray-500">Loading machines...</div> : dashboard?.machines.map(renderMachineCard)}
+                {!loading && !dashboard?.machines.length && <div className="text-gray-500">No machines found.</div>}
+              </div>
             </div>
 
-            <div className="px-5 py-4 border-b border-border bg-ink-3/40 flex items-center justify-between gap-4">
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Area Category</span>
-                <select
-                  value={categoryFilter}
-                  onChange={(e) => setCategoryFilter(e.target.value)}
-                  className="bg-ink border border-border rounded-lg px-3 py-2 text-xs text-white outline-none min-w-[180px]"
-                >
-                  {equipmentCategories.map((category) => (
-                    <option key={category} value={category}>{category}</option>
-                  ))}
-                </select>
+            <div className="grid grid-cols-2 gap-5">
+              <div className={`${shellCard} p-5`}>
+                <h3 className="font-display text-lg text-white mb-4">Alerts</h3>
+                {renderAlerts(dashboard?.alerts ?? [])}
               </div>
-              <div className="flex items-center gap-2">
-                <span className="text-[10px] font-mono text-gray-500 uppercase tracking-widest">Status Filter</span>
-                <select
-                  value={statusFilter}
-                  onChange={(e) => setStatusFilter(e.target.value)}
-                  className="bg-ink border border-border rounded-lg px-3 py-2 text-xs text-white outline-none min-w-[180px]"
-                >
-                  {statusCategories.map((status) => (
-                    <option key={status} value={status}>{status}</option>
-                  ))}
-                </select>
+              <div className={`${shellCard} p-5`}>
+                <h3 className="font-display text-lg text-white mb-4">Maintenance Logs</h3>
+                {renderLogs(dashboard?.maintenance_logs ?? [])}
               </div>
-            </div>
-            
-            <div className="flex-1 overflow-x-auto overflow-y-visible">
-              <table className="w-full text-left text-[13px]">
-                <thead className="bg-ink-3 text-[10px] font-mono text-gray-500 uppercase tracking-widest border-b border-border/50 sticky top-0 z-10">
-                  <tr>
-                    <th className="px-5 py-4 font-medium">Model / Region</th>
-                    <th className="px-5 py-4 font-medium">Classification</th>
-                    <th className="px-5 py-4 font-medium text-center">Status Index</th>
-                    <th className="px-5 py-4 font-medium">Last Sync</th>
-                    <th className="px-5 py-4 font-medium text-right">Forecast (Hrs)</th>
-                    <th className="px-5 py-4"></th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-border/30">
-                  {visibleMachines.map(m => {
-                    const totalHrs = Math.floor(m.rul_cycles * 1.8);
-                    const usage = (m.specifications as any)?.usage_hours_per_day || 8;
-                    const daysLeft = Math.ceil(totalHrs / usage);
-                    const isMaint = m.health < 40;
-                    const categoryTone = getCategoryCardTone(m.category);
-                    
-                    return (
-                      <tr key={m.id} onClick={() => handleRowClick(m)} className={`cursor-pointer transition-all duration-200 group relative ${selectedMachine?.id === m.id ? 'bg-white/10' : categoryTone.row}`}>
-                        <td className="px-5 py-4">
-                          <div className="flex items-center gap-2">
-                             <div className="font-semibold text-white group-hover:text-teal transition-colors font-display">{m.name}</div>
-                             {["Siemens", "ABB", "GE", "Schneider"].some(b => m.brand?.includes(b)) && <ShieldCheck size={14} className="text-teal/70" />}
-                          </div>
-                          <div className="flex items-center gap-2 mt-1">
-                            <div className="text-[11px] text-gray-500 font-mono tracking-normal uppercase">{m.location}</div>
-                            <span className={`text-[10px] font-mono uppercase px-2 py-0.5 rounded-full border ${categoryTone.badge}`}>
-                              {m.category || 'Uncategorized'}
-                            </span>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4">
-                          <div className="text-gray-300 font-medium">{m.brand}</div>
-                          <div className="text-[10px] text-gray-500 uppercase mt-0.5">{m.type}</div>
-                        </td>
-                        <td className="px-5 py-4">
-                          <div className="flex items-center justify-center gap-4">
-                            <div className="flex flex-col items-center">
-                               <span className="w-10 font-mono text-[12px] text-white/90 text-center">{m.health}%</span>
-                               {isMaint && <div className="text-[8px] text-amber-500 font-black animate-pulse flex items-center gap-0.5 mt-1"><Wrench size={8}/> MAINT</div>}
-                            </div>
-                            <div className="relative w-16 h-6 border border-white/10 rounded-md p-0.5 bg-black/40 overflow-hidden shadow-inner">
-                              <div className={`h-full rounded-sm transition-all duration-1000 bg-gradient-to-r ${m.health > 70 ? 'from-emerald-600 to-emerald-400' : m.health > 30 ? 'from-amber-600 to-amber-400' : 'from-red-600 to-red-400'}`} style={{ width: `${m.health}%` }} />
-                            </div>
-                          </div>
-                        </td>
-                        <td className="px-5 py-4 text-gray-400 font-mono text-[11px] whitespace-nowrap">{m.updated_at}</td>
-                        <td className="px-5 py-4 text-right">
-                          <div className="text-white font-mono font-bold text-sm tracking-normal">{totalHrs.toLocaleString()}h</div>
-                          <div className="text-[10px] text-teal/80 font-mono font-bold uppercase mt-1">DAYS REMAINING: {daysLeft}</div>
-                        </td>
-                        <td className="px-5 py-4 relative overflow-visible">
-                           <button 
-                             onClick={(e) => { e.stopPropagation(); setActiveMenuId(activeMenuId === m.id ? null : m.id); }}
-                             className="p-1.5 text-gray-500 hover:text-teal hover:bg-teal/10 rounded-lg transition-all"
-                           >
-                             <MoreVertical size={18} />
-                           </button>
-                           {activeMenuId === m.id && (
-                             <div className="absolute right-0 top-full mt-2 w-48 bg-ink-2 border border-border rounded-xl shadow-2xl z-50 overflow-hidden animate-fade-in py-1">
-                               <button onClick={() => openMaintenanceModal(m)} className="w-full flex items-center gap-3 px-4 py-2.5 text-[12px] text-white hover:bg-white/10 transition-colors">
-                                  <Wrench size={14} className="text-teal" /> Equipment Maintenance
-                               </button>
-                               <button 
-                                 onClick={() => fileInputRef.current?.click()} 
-                                 className="w-full flex items-center gap-3 px-4 py-2.5 text-[12px] text-white hover:bg-white/10 transition-colors"
-                               >
-                                  <Upload size={14} className="text-teal" /> Sync & Forecast
-                               </button>
-                               <button
-                                 onClick={() => navigate(`/equipment/${m.id}/edit`)}
-                                 className="w-full flex items-center gap-3 px-4 py-2.5 text-[12px] text-white hover:bg-white/10 transition-colors"
-                               >
-                                  <Pencil size={14} className="text-teal" /> Modify Equipment
-                               </button>
-                               <button
-                                 onClick={() => handleDeleteEquipment(m)}
-                                 className="w-full flex items-center gap-3 px-4 py-2.5 text-[12px] text-red-300 hover:bg-red-500/10 transition-colors"
-                               >
-                                  <Trash2 size={14} className="text-red-400" /> Delete Equipment
-                               </button>
-                               <input 
-                                 type="file" ref={fileInputRef} className="hidden" accept=".csv" 
-                                 onChange={(e) => { 
-                                   const f = e.target.files?.[0]; 
-                                   if(f) handleSyncUpload(m.id, f); 
-                                   setActiveMenuId(null);
-                                 }} 
-                               />
-                             </div>
-                           )}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-              {visibleMachines.length === 0 && <div className="p-20 text-center text-gray-500 font-display">NO ASSETS MATCH THE CURRENT FILTERS</div>}
             </div>
           </div>
 
-          {/* Right Panel */}
-          <div className="w-80 flex flex-col gap-6 shrink-0">
-            {selectedMachine ? (
-              <div className="card flex-1 animate-fade-up border-teal/20">
-                 <div className="flex items-center justify-between mb-6 pb-4 border-b border-border/50">
-                    <h3 className="font-display font-bold text-white tracking-wide">{selectedMachine.name}</h3>
-                    <button onClick={() => setSelectedMachine(null)} className="text-gray-500 hover:text-white transition-colors"><X size={20} /></button>
-                 </div>
-                 
-                 <div className="h-48 w-full">
-                    <ResponsiveContainer width="100%" height="100%">
-                      <LineChart data={chartData}>
-                        <CartesianGrid strokeDasharray="3 3" stroke="#2D3748" vertical={false} opacity={0.3} />
-                        <XAxis dataKey="time" hide />
-                        <YAxis stroke="#9CA3AF" fontSize={10} axisLine={false} tickLine={false} domain={['auto', 'auto']} tickFormatter={(v) => `${Math.round(v)}°`} />
-                        <RechartsTooltip contentStyle={{ backgroundColor: '#1E2540', border: 'none', borderRadius: '12px', boxShadow: '0 10px 15px -3px rgba(0,0,0,0.5)' }} />
-                        <ReferenceLine y={selectedMachine.specifications?.max_temp || 100} stroke="#EF4444" strokeDasharray="5 5" label={{ value: 'MAX THRESHOLD', position: 'right', fill: '#EF4444', fontSize: 9 }} />
-                        <Line type="monotone" dataKey="Temperature" stroke="#EF4444" strokeWidth={3} dot={false} animationDuration={2000} />
-                        <Line type="monotone" dataKey="Vibration" stroke="#00D4B8" strokeWidth={2} dot={false} />
-                      </LineChart>
-                    </ResponsiveContainer>
-                 </div>
-                 <button
-                   onClick={() => setShowChartDetail(true)}
-                   className="mt-3 w-full py-2.5 bg-ink border border-border rounded-lg text-xs text-white font-medium hover:bg-white/5 transition-all"
-                 >
-                   View in Detail
-                 </button>
-
-                 <div className="mt-8 space-y-4">
-                    <div className="bg-ink rounded-xl p-4 border border-border/30">
-                       <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">TOTAL OPERATION</div>
-                       <div className="text-2xl font-display font-medium text-white">
-                         {Math.round(((selectedMachine.specifications as any)?.derived_days_in_use || 0) * ((selectedMachine.specifications as any)?.usage_hours_per_day || 8)).toLocaleString()}
-                         <span className="text-xs text-gray-500"> Hours</span>
-                       </div>
-                    </div>
-                    <div className="bg-ink rounded-xl p-4 border border-border/30">
-                       <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">USAGE / LOAD</div>
-                       <div className="text-sm text-white font-medium">
-                         {((selectedMachine.specifications as any)?.usage_hours_per_day || 8)} h/day · {((selectedMachine.specifications as any)?.load_intensity || 'Medium')}
-                       </div>
-                       <div className="text-[11px] text-gray-500 mt-1 font-mono">
-                         {((selectedMachine.specifications as any)?.derived_cycles_completed || 0).toLocaleString()} cycles completed
-                       </div>
-                    </div>
-                    <div className="p-4 rounded-xl border border-teal/20 bg-teal/5">
-                       <div className="flex items-center gap-2 mb-2">
-                          <ShieldCheck size={16} className="text-teal" />
-                          <span className="text-xs font-bold text-teal tracking-normal uppercase font-mono">{selectedMachine.brand} Reliability</span>
-                       </div>
-                       <p className="text-[11px] text-gray-400 leading-relaxed">
-                         {["Siemens", "ABB", "GE", "Schneider"].some(b => selectedMachine.brand?.includes(b)) 
-                           ? `Deep-analysis confirms high engineering reliability for ${selectedMachine.brand}. RUL prediction boosted by 25%.`
-                           : "Baseline assessment active. Standard component wear rates applied."}
-                       </p>
-                    </div>
-                    <button className="w-full py-2 bg-ink-3 border border-border rounded-lg text-xs text-white font-medium hover:bg-white/5 transition-all flex items-center justify-center gap-2">
-                      <FileText size={14} className="text-teal" /> EXPORT PDF REPORT
-                    </button>
-                 </div>
-              </div>
-            ) : (
-              <div className="card flex flex-col items-center justify-center py-12 border-border/20">
-                 <h3 className="font-display font-semibold mb-8 text-gray-300">Fleet Health Distribution</h3>
-                 <div className="w-44 h-44 relative">
-                    <Doughnut data={donutData} options={{ cutout: '85%', plugins: { legend: { display: false } } }} />
-                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
-                       <span className="text-sm text-gray-500 font-mono">ASSETS</span>
-                       <span className="text-4xl font-display font-black text-white">{machines.length}</span>
-                    </div>
-                 </div>
-              </div>
-            )}
+          <div className="space-y-5">
+            <div className={`${shellCard} p-5`}>
+              <h3 className="font-display text-xl text-white mb-4">Fleet Focus</h3>
+              {topMachine ? (
+                <div className="space-y-3">
+                  <div className="text-white font-semibold">{topMachine.name}</div>
+                  <div className="text-sm text-gray-400">Lowest current health in fleet with {getRulHours(topMachine)} hours of estimated RUL left.</div>
+                  <div className={`inline-flex px-3 py-1 rounded-full border text-xs font-mono ${statusTone[topMachine.status] || statusTone.Healthy}`}>{topMachine.status}</div>
+                </div>
+              ) : (
+                <div className="text-gray-500">No fleet data yet.</div>
+              )}
+            </div>
           </div>
         </div>
       </div>
 
-      {/* FIXED MODALS */}
-      {isAddModalOpen && (
-        <div className="fixed inset-0 z-[999] bg-black/80 backdrop-blur-xl grid place-items-center p-4">
-          <div className="bg-ink-2 border border-border rounded-2xl p-10 w-full max-w-2xl max-h-[90vh] overflow-y-auto shadow-[0_0_50px_rgba(0,0,0,0.5)] relative border-teal/20">
-            <div className="flex justify-between items-center mb-8">
-              <h3 className="font-display text-2xl font-bold text-white tracking-normal">Deploy Asset</h3>
-              <button onClick={() => setIsAddModalOpen(false)} className="text-gray-500 hover:text-white transition-all"><X size={24} /></button>
-            </div>
-            
-            <div className="space-y-6">
-              <div className="grid grid-cols-2 gap-4">
-                <div>
-                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Equipment Name</label>
-                  <input type="text" value={newEqName} onChange={e => setNewEqName(e.target.value)} placeholder="e.g. Conveyor-A4" className="w-full bg-ink border border-border rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-teal transition-all" />
-                </div>
-                <div>
-                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Location</label>
-                  <input type="text" value={newEqLocation} onChange={e => setNewEqLocation(e.target.value)} placeholder="e.g. Floor 2 - Line B" className="w-full bg-ink border border-border rounded-xl px-4 py-3 text-white text-sm outline-none focus:border-teal transition-all" />
-                </div>
-              </div>
-
-              <div>
-                <div className="flex justify-between mb-2">
-                   <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase">SEED TELEMETRY (CSV)</label>
-                   <button onClick={() => setShowExampleModal(true)} className="text-[10px] text-teal hover:underline font-mono">VIEW CSV SPEC</button>
-                </div>
-                <div className="relative h-20 group border-2 border-dashed border-border rounded-xl hover:border-teal/50 transition-all flex flex-col items-center justify-center gap-2 bg-black/20">
-                  <input type="file" accept=".csv" onChange={e => setInitialFile(e.target.files?.[0] || null)} className="absolute inset-0 opacity-0 cursor-pointer z-10" />
-                  <Upload size={20} className="text-gray-500 group-hover:text-teal" />
-                  <span className="text-[10px] text-gray-500 uppercase font-mono">{initialFile ? initialFile.name : 'Drag telemetry here'}</span>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Equipment Type</label>
-                   <select value={newEqType} onChange={e => setNewEqType(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
-                     <option>Motor</option><option>Pump</option><option>HVAC</option><option>Conveyor</option><option>Compressor</option><option>Cooling</option>
-                   </select>
-                </div>
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Brand</label>
-                   <select value={newEqBrand} onChange={e => setNewEqBrand(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
-                     <option>Generic</option><option>Siemens</option><option>ABB</option><option>GE</option><option>Schneider</option><option>Other</option>
-                   </select>
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Start Using Date</label>
-                   <input type="date" value={newEqStartDate} onChange={e => setNewEqStartDate(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                </div>
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Duty Cycle (H/D)</label>
-                   <input type="number" value={newEqUsage} onChange={e => setNewEqUsage(parseInt(e.target.value))} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-3 gap-4 text-xs">
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Load Level</label>
-                   <select value={newEqLoad} onChange={e => setNewEqLoad(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none">
-                     <option>Light</option><option>Medium</option><option>Heavy</option>
-                   </select>
-                </div>
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Cycles Completed</label>
-                   <input type="number" min="0" value={newEqCycleCount} onChange={e => setNewEqCycleCount(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                </div>
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Cycles / Day</label>
-                   <input type="number" min="0" value={newEqDailyCycles} onChange={e => setNewEqDailyCycles(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                </div>
-              </div>
-
-              <div className="grid grid-cols-2 gap-4 text-xs">
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Starting Health %</label>
-                   <input type="number" min="0" max="100" value={newEqBattery} onChange={e => setNewEqBattery(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                </div>
-                <div>
-                   <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Max Temperature Threshold</label>
-                   <input type="number" value={newEqTemp} onChange={e => setNewEqTemp(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                </div>
-              </div>
-
-              <div>
-                <div className="text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-3">Current Operating Readings</div>
-                <div className="grid grid-cols-3 gap-4 text-xs">
-                  <div>
-                     <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Temperature</label>
-                     <input type="number" step="0.1" value={newEqCurrentTemp} onChange={e => setNewEqCurrentTemp(parseFloat(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                  </div>
-                  <div>
-                     <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">Vibration</label>
-                     <input type="number" step="0.01" value={newEqCurrentVibration} onChange={e => setNewEqCurrentVibration(parseFloat(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                  </div>
-                  <div>
-                     <label className="block text-gray-500 mb-2 uppercase font-mono tracking-tight">RPM</label>
-                     <input type="number" value={newEqCurrentRpm} onChange={e => setNewEqCurrentRpm(parseInt(e.target.value) || 0)} className="w-full bg-ink border border-border rounded-xl px-3 py-2.5 text-white outline-none" />
-                  </div>
-                </div>
-              </div>
-
-              <button onClick={handleAddEquipment} disabled={loading} className="w-full bg-teal text-ink font-bold py-4 rounded-xl shadow-lg hover:brightness-110 active:scale-[0.98] transition-all mt-4 border-b-4 border-teal-700">
-                {loading ? 'INITIALIZING...' : 'AUTHORIZE DEPLOYMENT'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {showExampleModal && (
-        <div className="fixed inset-0 z-[1000] bg-black/90 flex items-center justify-center p-4">
-          <div className="bg-ink-2 border border-border rounded-2xl p-8 w-full max-w-xl shadow-2xl animate-fade-up">
-            <div className="flex justify-between items-center mb-8 pb-4 border-b border-white/5">
-              <h3 className="font-display text-xl font-bold text-white">CSV Specification v1.0</h3>
-              <button onClick={() => setShowExampleModal(false)} className="text-gray-400 hover:text-white"><X size={20} /></button>
-            </div>
-            <div className="bg-black/40 rounded-xl p-6 font-mono text-[12px] border border-border/50 space-y-4">
-               <div>
-                  <span className="text-teal"># Required Headers</span>
-                  <div className="text-gray-300 mt-1 uppercase">timestamp, temperature, vibration, rpm</div>
-               </div>
-               <div>
-                  <span className="text-teal"># Sample Data</span>
-                  <div className="text-gray-500 mt-1">2026-03-19 08:30:00, 82.503, 0.457, 1205</div>
-               </div>
-            </div>
-            <button onClick={() => setShowExampleModal(false)} className="w-full bg-ink border border-border text-white font-bold py-3 rounded-xl mt-8 hover:bg-white/5 transition-all">CONFIRM FORMAT</button>
-          </div>
-        </div>
-      )}
-
       {maintenanceMachine && (
-        <div className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-ink-2 border border-border rounded-2xl p-8 w-full max-w-lg shadow-2xl">
+        <div className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm overflow-y-auto px-6 py-8 md:px-10 md:py-12">
+          <div className={`${shellCard} mx-auto p-6 md:p-7 w-full max-w-3xl`}>
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h3 className="font-display text-2xl font-bold text-white">Equipment Maintenance</h3>
                 <p className="text-sm text-gray-400 mt-1">{maintenanceMachine.name}</p>
               </div>
               <button onClick={() => setMaintenanceMachine(null)} className="text-gray-500 hover:text-white transition-colors">
-                <X size={22} />
+                Close
               </button>
             </div>
 
-            <div className="space-y-5">
+            <div className="space-y-4">
               <div className="grid grid-cols-2 gap-4">
                 <div>
                   <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Maintenance Type</label>
-                  <select value={maintenanceType} onChange={(e) => setMaintenanceType(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-3 text-white text-sm outline-none">
+                  <select value={maintenanceType} onChange={(e) => setMaintenanceType(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none">
                     <option>Preventive</option>
                     <option>Corrective</option>
                     <option>Inspection</option>
@@ -848,25 +758,63 @@ export default function Dashboard() {
                 </div>
                 <div>
                   <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Maintenance Date</label>
-                  <input type="date" value={maintenanceDate} onChange={(e) => setMaintenanceDate(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-3 text-white text-sm outline-none" />
+                  <input type="date" value={maintenanceDate} onChange={(e) => setMaintenanceDate(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
+              </div>
+
+              <div className="grid grid-cols-4 gap-4">
+                <div>
+                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Cost</label>
+                  <input type="number" min="0" value={maintenanceCost} onChange={(e) => setMaintenanceCost(e.target.value)} placeholder="e.g. 2500" className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Technician</label>
+                  <input type="text" value={maintenanceTechnician} onChange={(e) => setMaintenanceTechnician(e.target.value)} placeholder="e.g. Amir" className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
+                <div className="col-span-2">
+                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Parts Replaced</label>
+                  <input type="text" value={maintenanceParts} onChange={(e) => setMaintenanceParts(e.target.value)} placeholder="e.g. Bearings, fan belt, coolant valve" className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
+              </div>
+
+              <div className={`${innerCard} p-4`}>
+                <div className="text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-3">Reset Machine State</div>
+                <div className="grid grid-cols-3 gap-4">
+                  <div>
+                    <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Restored Health %</label>
+                    <input type="number" min="0" max="100" value={resetHealthPct} onChange={(e) => setResetHealthPct(parseInt(e.target.value) || 0)} className="w-full bg-ink-2 border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Restored RUL Cycles</label>
+                    <input type="number" min="0" value={resetRulCycles} onChange={(e) => setResetRulCycles(parseInt(e.target.value) || 0)} className="w-full bg-ink-2 border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                  </div>
+                  <div>
+                    <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Reset Cycle</label>
+                    <input type="number" min="0" value={resetCycle} onChange={(e) => setResetCycle(parseInt(e.target.value) || 0)} className="w-full bg-ink-2 border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                  </div>
+                </div>
+                <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                  <label className="flex items-center gap-2 text-gray-300">
+                    <input type="checkbox" checked={clearSensorHistory} onChange={(e) => setClearSensorHistory(e.target.checked)} />
+                    Clear old sensor history
+                  </label>
+                  <label className="flex items-center gap-2 text-gray-300">
+                    <input type="checkbox" checked={clearAlerts} onChange={(e) => setClearAlerts(e.target.checked)} />
+                    Clear active alerts
+                  </label>
                 </div>
               </div>
 
               <div>
-                <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Estimated Cost</label>
-                <input type="number" min="0" value={maintenanceCost} onChange={(e) => setMaintenanceCost(e.target.value)} placeholder="e.g. 2500" className="w-full bg-ink border border-border rounded-xl px-4 py-3 text-white text-sm outline-none" />
-              </div>
-
-              <div>
                 <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Notes</label>
-                <textarea value={maintenanceNotes} onChange={(e) => setMaintenanceNotes(e.target.value)} rows={4} placeholder="Describe the issue, replaced parts, technician notes, or maintenance scope." className="w-full bg-ink border border-border rounded-xl px-4 py-3 text-white text-sm outline-none resize-none" />
+                <textarea value={maintenanceNotes} onChange={(e) => setMaintenanceNotes(e.target.value)} rows={3} placeholder="Describe the issue, replaced parts, technician notes, or maintenance scope." className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none resize-none" />
               </div>
 
               <div className="flex justify-end gap-3 pt-2">
                 <button onClick={() => setMaintenanceMachine(null)} className="px-5 py-3 bg-ink border border-border rounded-xl text-sm text-gray-300 hover:bg-white/5">
                   Cancel
                 </button>
-                <button onClick={handleRequestMaintenance} className="px-5 py-3 bg-teal text-ink font-bold rounded-xl hover:brightness-110">
+                <button onClick={() => void handleRequestMaintenance()} className="px-5 py-3 bg-teal text-ink font-bold rounded-xl hover:brightness-110">
                   Save Maintenance
                 </button>
               </div>
@@ -875,63 +823,109 @@ export default function Dashboard() {
         </div>
       )}
 
-      {showChartDetail && selectedMachine && (
-        <div className="fixed inset-0 z-[1000] bg-black/85 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="bg-ink-2 border border-border rounded-2xl p-8 w-full max-w-5xl shadow-2xl">
+      {economicsMachine && (
+        <div className="fixed inset-0 z-[1000] bg-black/80 backdrop-blur-sm overflow-y-auto px-6 py-8 md:px-10 md:py-12">
+          <div className={`${shellCard} mx-auto p-6 md:p-7 w-full max-w-2xl`}>
             <div className="flex items-center justify-between mb-6">
               <div>
-                <h3 className="font-display text-2xl font-bold text-white">Sensor Trend Detail</h3>
-                <p className="text-sm text-gray-400 mt-1">
-                  {selectedMachine.name} · {selectedMachine.category || 'Uncategorized'} · {selectedMachine.location}
-                </p>
+                <h3 className="font-display text-2xl font-bold text-white">Machine Economics</h3>
+                <p className="text-sm text-gray-400 mt-1">{economicsMachine.name}</p>
               </div>
-              <button onClick={() => setShowChartDetail(false)} className="text-gray-500 hover:text-white transition-colors">
-                <X size={22} />
+              <button onClick={() => setEconomicsMachine(null)} className="text-gray-500 hover:text-white transition-colors">
+                Close
               </button>
             </div>
 
-            <div className="grid grid-cols-4 gap-4 mb-6">
-              <div className="rounded-xl border border-border bg-ink px-4 py-3">
-                <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Health</div>
-                <div className="text-2xl font-display text-white">{selectedMachine.health}%</div>
+            <div className="space-y-4">
+              <div className="grid grid-cols-2 gap-4">
+                <div>
+                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Revenue / Month</label>
+                  <input type="number" min="0" value={revenuePerMonth} onChange={(e) => setRevenuePerMonth(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Operating Cost / Month</label>
+                  <input type="number" min="0" value={operatingCostPerMonth} onChange={(e) => setOperatingCostPerMonth(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
               </div>
-              <div className="rounded-xl border border-border bg-ink px-4 py-3">
-                <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">RUL</div>
-                <div className="text-2xl font-display text-white">{Math.floor(selectedMachine.rul_cycles * 1.8)}h</div>
+
+              <div className="grid grid-cols-2 gap-4">
+                <div className={`${innerCard} px-4 py-4`}>
+                  <div className="text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-1">Derived Maintenance Cost</div>
+                  <div className="text-lg font-semibold text-white">RM {selectedMachine?.economics?.projected_maintenance_cost?.toFixed(2) ?? '0.00'}</div>
+                  <div className="mt-1 text-xs text-gray-400">Auto-calculated from recorded maintenance logs.</div>
+                </div>
+                <div>
+                  <label className="block text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Replacement Cost</label>
+                  <input type="number" min="0" value={replacementCost} onChange={(e) => setReplacementCost(e.target.value)} className="w-full bg-ink border border-border rounded-xl px-4 py-2.5 text-white text-sm outline-none" />
+                </div>
               </div>
-              <div className="rounded-xl border border-border bg-ink px-4 py-3">
-                <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Load</div>
-                <div className="text-2xl font-display text-white">{(selectedMachine.specifications as any)?.load_intensity || 'Medium'}</div>
-              </div>
-              <div className="rounded-xl border border-border bg-ink px-4 py-3">
-                <div className="text-[10px] text-gray-500 uppercase font-mono tracking-widest mb-1">Cycles</div>
-                <div className="text-2xl font-display text-white">{((selectedMachine.specifications as any)?.derived_cycles_completed || 0).toLocaleString()}</div>
+
+              {renderEconomics({
+                revenue_per_month: Number(revenuePerMonth || 0),
+                operating_cost_per_month: Number(operatingCostPerMonth || 0),
+                projected_maintenance_cost: selectedMachine?.economics?.projected_maintenance_cost ?? 0,
+                replacement_cost: Number(replacementCost || 0),
+                maintenance_cost_total: selectedMachine?.economics?.maintenance_cost_total ?? 0,
+                maintenance_events: selectedMachine?.economics?.maintenance_events ?? 0,
+                monthly_margin: Number(revenuePerMonth || 0) - Number(operatingCostPerMonth || 0),
+                downtime_risk_cost: selectedMachine?.economics?.downtime_risk_cost ?? 0,
+                keep_estimated_value_12m: selectedMachine?.economics?.keep_estimated_value_12m ?? 0,
+                replace_estimated_value_12m: selectedMachine?.economics?.replace_estimated_value_12m ?? 0,
+                replacement_efficiency_gain: selectedMachine?.economics?.replacement_efficiency_gain ?? 0,
+                recommendation: selectedMachine?.economics?.recommendation ?? 'Save to analyze',
+                rationale: selectedMachine?.economics?.rationale ?? 'Persist the values to update the recommendation.',
+                current_health_pct: selectedMachine?.economics?.current_health_pct ?? 0,
+                current_rul_cycles: selectedMachine?.economics?.current_rul_cycles ?? 0,
+              })}
+
+              <div className="flex justify-end gap-3 pt-2">
+                <button onClick={() => setEconomicsMachine(null)} className="px-5 py-3 bg-ink border border-border rounded-xl text-sm text-gray-300 hover:bg-white/5">
+                  Cancel
+                </button>
+                <button onClick={() => void handleSaveEconomics()} className="px-5 py-3 bg-teal text-ink font-bold rounded-xl hover:brightness-110">
+                  Save Economics
+                </button>
               </div>
             </div>
+          </div>
+        </div>
+      )}
 
-            <div className="h-[420px] w-full rounded-2xl border border-border bg-ink p-4">
-              <ResponsiveContainer width="100%" height="100%">
-                <LineChart data={chartData} margin={{ top: 16, right: 24, left: 8, bottom: 8 }}>
-                  <CartesianGrid strokeDasharray="3 3" stroke="#2D3748" vertical={false} opacity={0.35} />
-                  <XAxis dataKey="time" stroke="#9CA3AF" fontSize={11} tickLine={false} axisLine={false} />
-                  <YAxis yAxisId="temp" stroke="#9CA3AF" fontSize={11} tickLine={false} axisLine={false} label={{ value: 'Temp', angle: -90, position: 'insideLeft', fill: '#9CA3AF' }} />
-                  <YAxis yAxisId="vibration" orientation="right" stroke="#9CA3AF" fontSize={11} tickLine={false} axisLine={false} label={{ value: 'Vibration', angle: 90, position: 'insideRight', fill: '#9CA3AF' }} />
-                  <RechartsTooltip contentStyle={{ backgroundColor: '#141929', border: '1px solid rgba(255,255,255,0.08)', borderRadius: '12px' }} />
-                  <ReferenceLine yAxisId="temp" y={selectedMachine.specifications?.max_temp || 100} stroke="#EF4444" strokeDasharray="5 5" label={{ value: 'MAX TEMP', position: 'top', fill: '#EF4444', fontSize: 10 }} />
-                  <Line yAxisId="temp" type="monotone" dataKey="Temperature" stroke="#EF4444" strokeWidth={3} dot={false} activeDot={{ r: 4 }} />
-                  <Line yAxisId="vibration" type="monotone" dataKey="Vibration" stroke="#00D4B8" strokeWidth={2.5} dot={false} activeDot={{ r: 4 }} />
-                </LineChart>
-              </ResponsiveContainer>
-            </div>
-
-            <div className="flex justify-end mt-6">
-              <button onClick={() => setShowChartDetail(false)} className="px-5 py-3 bg-ink border border-border rounded-xl text-sm text-gray-300 hover:bg-white/5">
+      {deleteMachine && (
+        <div className="fixed inset-0 z-[1100] bg-black/80 backdrop-blur-sm flex items-center justify-center px-6 py-8">
+          <div className={`${shellCard} w-full max-w-md p-6`}>
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <h3 className="font-display text-2xl font-bold text-white">Delete Equipment</h3>
+                <p className="mt-2 text-sm text-gray-400">
+                  This will permanently remove <span className="text-white font-medium">{deleteMachine.name}</span> and its
+                  sensor history, maintenance logs, alerts, and predictions.
+                </p>
+              </div>
+              <button onClick={() => setDeleteMachine(null)} className="text-gray-500 hover:text-white transition-colors">
                 Close
+              </button>
+            </div>
+
+            <div className={`${innerCard} mt-5 px-4 py-4`}>
+              <div className="text-[10px] text-gray-500 font-mono tracking-widest uppercase mb-2">Machine Summary</div>
+              <div className="text-sm text-white">{deleteMachine.name}</div>
+              <div className="mt-1 text-xs text-gray-400">
+                {deleteMachine.type} | {deleteMachine.location || 'Unknown location'}
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button onClick={() => setDeleteMachine(null)} className="px-5 py-3 bg-ink border border-border rounded-xl text-sm text-gray-300 hover:bg-white/5">
+                Cancel
+              </button>
+              <button onClick={() => void handleDeleteEquipment()} className="px-5 py-3 bg-red-500 text-white font-bold rounded-xl hover:brightness-110">
+                Delete Machine
               </button>
             </div>
           </div>
         </div>
       )}
     </>
-  );
+  )
 }
